@@ -7,23 +7,19 @@ PINTEREST_API = "https://api.pinterest.com/v5"
 ACCESS_TOKEN = os.environ.get("PINTEREST_ACCESS_TOKEN", "")
 PORT = int(os.environ.get("PORT", 8000))
 
-
 def auth_headers():
     return {"Authorization": f"Bearer {ACCESS_TOKEN}", "Content-Type": "application/json"}
-
 
 def list_boards():
     r = httpx.get(f"{PINTEREST_API}/boards", headers=auth_headers(), params={"page_size": 100})
     r.raise_for_status()
     return r.json().get("items", [])
 
-
 def create_board(name, description="", privacy="PUBLIC"):
     r = httpx.post(f"{PINTEREST_API}/boards", headers=auth_headers(),
                    json={"name": name, "description": description, "privacy": privacy})
     r.raise_for_status()
     return r.json()
-
 
 def create_pin(board_id, title, description, image_url, link="https://meandlia.com", alt_text=""):
     payload = {
@@ -38,24 +34,20 @@ def create_pin(board_id, title, description, image_url, link="https://meandlia.c
     r.raise_for_status()
     return r.json()
 
-
 def list_pins(board_id):
     r = httpx.get(f"{PINTEREST_API}/boards/{board_id}/pins", headers=auth_headers(), params={"page_size": 25})
     r.raise_for_status()
     return r.json().get("items", [])
-
 
 def get_account_info():
     r = httpx.get(f"{PINTEREST_API}/user_account", headers=auth_headers())
     r.raise_for_status()
     return r.json()
 
-
 def get_ad_accounts():
     r = httpx.get(f"{PINTEREST_API}/ad_accounts", headers=auth_headers(), params={"page_size": 25})
     r.raise_for_status()
     return r.json().get("items", [])
-
 
 def get_campaigns(ad_account_id):
     r = httpx.get(f"{PINTEREST_API}/ad_accounts/{ad_account_id}/campaigns",
@@ -63,12 +55,11 @@ def get_campaigns(ad_account_id):
     r.raise_for_status()
     return r.json().get("items", [])
 
-
 def get_campaign_analytics(ad_account_id, start_date, end_date, campaign_ids=None):
     params = {
         "start_date": start_date,
         "end_date": end_date,
-        "columns": "SPEND_IN_DOLLAR,IMPRESSION_1,CLICK_1,CTR,CHECKOUT,CPC_IN_MICRO_DOLLAR,CPM_IN_MICRO_DOLLAR",
+        "columns": "SPEND_IN_DOLLAR,IMPRESSION,TOTAL_CLICKTHROUGH,CTR,TOTAL_CONVERSIONS,CPC_IN_MICRO_DOLLAR,CPM_IN_MICRO_DOLLAR",
         "granularity": "TOTAL",
     }
     if campaign_ids:
@@ -78,12 +69,11 @@ def get_campaign_analytics(ad_account_id, start_date, end_date, campaign_ids=Non
     r.raise_for_status()
     return r.json()
 
-
 def get_ad_group_analytics(ad_account_id, start_date, end_date, ad_group_ids=None):
     params = {
         "start_date": start_date,
         "end_date": end_date,
-        "columns": "SPEND_IN_DOLLAR,IMPRESSION_1,CLICK_1,CTR,CHECKOUT,CPC_IN_MICRO_DOLLAR",
+        "columns": "SPEND_IN_DOLLAR,IMPRESSION,TOTAL_CLICKTHROUGH,CTR,TOTAL_CONVERSIONS,CPC_IN_MICRO_DOLLAR",
         "granularity": "TOTAL",
     }
     if ad_group_ids:
@@ -93,12 +83,11 @@ def get_ad_group_analytics(ad_account_id, start_date, end_date, ad_group_ids=Non
     r.raise_for_status()
     return r.json()
 
-
 def get_ad_analytics(ad_account_id, start_date, end_date, ad_ids=None):
     params = {
         "start_date": start_date,
         "end_date": end_date,
-        "columns": "SPEND_IN_DOLLAR,IMPRESSION_1,CLICK_1,CTR,CHECKOUT,CPC_IN_MICRO_DOLLAR",
+        "columns": "SPEND_IN_DOLLAR,IMPRESSION,TOTAL_CLICKTHROUGH,CTR,TOTAL_CONVERSIONS,CPC_IN_MICRO_DOLLAR",
         "granularity": "TOTAL",
     }
     if ad_ids:
@@ -107,7 +96,6 @@ def get_ad_analytics(ad_account_id, start_date, end_date, ad_ids=None):
                   headers=auth_headers(), params=params)
     r.raise_for_status()
     return r.json()
-
 
 TOOLS = {
     "list_boards": {"description": "List all Pinterest boards", "inputSchema": {"type": "object", "properties": {}}},
@@ -122,117 +110,153 @@ TOOLS = {
     "get_ad_analytics": {"description": "Get individual ad performance analytics for a date range", "inputSchema": {"type": "object", "properties": {"ad_account_id": {"type": "string"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "ad_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["ad_account_id", "start_date", "end_date"]}},
 }
 
+def format_spend(micro_dollars):
+    if micro_dollars is None:
+        return "N/A"
+    return f"${micro_dollars / 1_000_000:.2f}"
 
-def format_spend(micro):
-    try:
-        return f"${float(micro)/1000000:.2f}"
-    except Exception:
-        return str(micro)
-
-
-def handle_mcp(body):
-    method = body.get("method")
-    params = body.get("params", {})
-    req_id = body.get("id")
-
-    def ok(result):
-        return {"jsonrpc": "2.0", "id": req_id, "result": result}
-
-    def err(msg):
-        return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32000, "message": msg}}
-
-    if method == "initialize":
-        return ok({"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}, "serverInfo": {"name": "pinterest", "version": "2.0.0"}})
-
+def handle_mcp(method, params):
     if method == "tools/list":
-        tools = [{"name": k, "description": v["description"], "inputSchema": v["inputSchema"]} for k, v in TOOLS.items()]
-        return ok({"tools": tools})
-
+        return {"tools": [{"name": k, "description": v["description"], "inputSchema": v["inputSchema"]} for k, v in TOOLS.items()]}
+    
     if method == "tools/call":
         name = params.get("name")
         args = params.get("arguments", {})
+        
         try:
             if name == "list_boards":
                 boards = list_boards()
-                text = "\n".join(f"- {b['name']} (id: {b['id']})" for b in boards) or "No boards found."
+                text = "\n".join([f"- {b['name']} (ID: {b['id']})" for b in boards]) or "No boards found."
+                return ok(text)
+            
             elif name == "create_board":
-                b = create_board(args["name"], args.get("description", ""), args.get("privacy", "PUBLIC"))
-                text = f"Board created: {b['name']} (id: {b['id']})"
+                board = create_board(args["name"], args.get("description", ""), args.get("privacy", "PUBLIC"))
+                return ok(f"Board created: {board['name']} (ID: {board['id']})")
+            
             elif name == "create_pin":
-                p = create_pin(args["board_id"], args["title"], args["description"], args["image_url"], args.get("link", "https://meandlia.com"), args.get("alt_text", ""))
-                text = f"Pin created: {p['title']} (id: {p['id']})"
+                pin = create_pin(args["board_id"], args["title"], args["description"], args["image_url"], args.get("link", "https://meandlia.com"), args.get("alt_text", ""))
+                return ok(f"Pin created! ID: {pin['id']}\nURL: https://pinterest.com/pin/{pin['id']}/")
+            
             elif name == "list_pins":
                 pins = list_pins(args["board_id"])
-                text = "\n".join(f"- {p.get('title', 'Untitled')} (id: {p['id']})" for p in pins) or "No pins found."
+                if not pins:
+                    return ok("No pins found on this board.")
+                lines = []
+                for p in pins:
+                    lines.append(f"- {p.get('title', 'Untitled')} (ID: {p['id']})")
+                return ok("\n".join(lines))
+            
             elif name == "get_account_info":
-                a = get_account_info()
-                text = f"Account: {a.get('username')}\nFollowers: {a.get('follower_count', 0)}\nPins: {a.get('pin_count', 0)}"
+                info = get_account_info()
+                text = f"Username: {info.get('username')}\nAccount type: {info.get('account_type')}\nProfile: {info.get('website_url', 'N/A')}"
+                return ok(text)
+            
             elif name == "get_ad_accounts":
                 accounts = get_ad_accounts()
-                text = "\n".join(f"- {a.get('name', 'Unnamed')} (id: {a['id']}, currency: {a.get('currency', 'N/A')})" for a in accounts) or "No ad accounts found."
+                if not accounts:
+                    return ok("No ad accounts found.")
+                lines = [f"- {a['name']} (ID: {a['id']}, Currency: {a.get('currency', 'N/A')})" for a in accounts]
+                return ok("\n".join(lines))
+            
             elif name == "get_campaigns":
                 campaigns = get_campaigns(args["ad_account_id"])
-                text = "\n".join(f"- {c.get('name')} (id: {c['id']}, status: {c.get('status')}, objective: {c.get('objective_type')})" for c in campaigns) or "No campaigns found."
+                if not campaigns:
+                    return ok("No campaigns found.")
+                lines = [f"- {c['name']} (ID: {c['id']}, Status: {c.get('status', 'N/A')}, Objective: {c.get('objective_type', 'N/A')})" for c in campaigns]
+                return ok("\n".join(lines))
+            
             elif name == "get_campaign_analytics":
                 data = get_campaign_analytics(args["ad_account_id"], args["start_date"], args["end_date"], args.get("campaign_ids"))
-                lines = []
-                for item in data:
-                    m = item.get("metrics", {})
-                    spend = m.get("SPEND_IN_DOLLAR", 0)
-                    impressions = m.get("TOTAL_IMPRESSIONS", 0)
-                    clicks = m.get("TOTAL_CLICKS", 0)
-                    ctr = float(m.get("CTR", 0)) * 100
-                    conversions = m.get("TOTAL_CONVERSIONS", 0)
-                    checkouts = m.get("TOTAL_CLICK_CHECKOUT", 0)
-                    cpc = format_spend(m.get("CPC_IN_MICRO_DOLLAR", 0))
-                    cpm = format_spend(m.get("CPM_IN_MICRO_DOLLAR", 0))
-                    lines.append(f"Campaign {item.get('CAMPAIGN_ID', 'N/A')}:\n  Spend: ${float(spend):.2f}\n  Impressions: {int(impressions):,}\n  Clicks: {int(clicks):,}\n  CTR: {ctr:.2f}%\n  Conversions: {conversions}\n  Checkouts (click): {checkouts}\n  CPC: {cpc}\n  CPM: {cpm}")
-                text = "\n\n".join(lines) or "No campaign analytics data found."
+                if not data:
+                    return ok("No analytics data found for this period.")
+                lines = ["Campaign Analytics Report", "=" * 40]
+                for row in data:
+                    metrics = row.get("metrics", {})
+                    lines.append(f"\nCampaign ID: {row.get('campaign_id', 'N/A')}")
+                    lines.append(f"  Spend: {format_spend(metrics.get('SPEND_IN_DOLLAR'))}")
+                    lines.append(f"  Impressions: {metrics.get('IMPRESSION', 'N/A'):,}" if isinstance(metrics.get('IMPRESSION'), int) else f"  Impressions: {metrics.get('IMPRESSION', 'N/A')}")
+                    lines.append(f"  Clicks: {metrics.get('TOTAL_CLICKTHROUGH', 'N/A')}")
+                    lines.append(f"  CTR: {metrics.get('CTR', 'N/A')}%")
+                    lines.append(f"  Conversions: {metrics.get('TOTAL_CONVERSIONS', 'N/A')}")
+                return ok("\n".join(lines))
+            
             elif name == "get_ad_group_analytics":
                 data = get_ad_group_analytics(args["ad_account_id"], args["start_date"], args["end_date"], args.get("ad_group_ids"))
-                lines = []
-                for item in data:
-                    m = item.get("metrics", {})
-                    lines.append(f"Ad Group {item.get('AD_GROUP_ID', 'N/A')}: Spend ${float(m.get('SPEND_IN_DOLLAR', 0)):.2f}, Impressions {int(m.get('TOTAL_IMPRESSIONS', 0)):,}, Clicks {int(m.get('TOTAL_CLICKS', 0)):,}, CTR {float(m.get('CTR', 0))*100:.2f}%, Conversions {m.get('TOTAL_CONVERSIONS', 0)}")
-                text = "\n".join(lines) or "No ad group analytics found."
+                return ok(json.dumps(data, indent=2))
+            
             elif name == "get_ad_analytics":
                 data = get_ad_analytics(args["ad_account_id"], args["start_date"], args["end_date"], args.get("ad_ids"))
-                lines = []
-                for item in data:
-                    m = item.get("metrics", {})
-                    lines.append(f"Ad {item.get('AD_ID', 'N/A')}: Spend ${float(m.get('SPEND_IN_DOLLAR', 0)):.2f}, Impressions {int(m.get('TOTAL_IMPRESSIONS', 0)):,}, Clicks {int(m.get('TOTAL_CLICKS', 0)):,}, CTR {float(m.get('CTR', 0))*100:.2f}%, Conversions {m.get('TOTAL_CONVERSIONS', 0)}")
-                text = "\n".join(lines) or "No ad analytics found."
+                return ok(json.dumps(data, indent=2))
+            
             else:
                 return err(f"Unknown tool: {name}")
-            return ok({"content": [{"type": "text", "text": text}]})
+        
+        except httpx.HTTPStatusError as e:
+            return err(f"Pinterest API error: {e.response.status_code} - {e.response.text}")
         except Exception as e:
-            return err(str(e))
-
+            return err(f"Error: {str(e)}")
+    
     return err(f"Unknown method: {method}")
 
+def ok(text):
+    return {"content": [{"type": "text", "text": text}]}
+
+def err(msg):
+    return {"content": [{"type": "text", "text": msg}], "isError": True}
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass
 
     def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps({"status": "ok", "version": "2.0.0"}).encode())
+        if self.path == "/health":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"OK")
+        else:
+            self.send_response(404)
+            self.end_headers()
 
     def do_POST(self):
+        if self.path != "/mcp":
+            self.send_response(404)
+            self.end_headers()
+            return
+        
         length = int(self.headers.get("Content-Length", 0))
-        body = json.loads(self.rfile.read(length))
-        response = handle_mcp(body)
-        data = json.dumps(response).encode()
+        body = self.rfile.read(length)
+        
+        try:
+            req = json.loads(body)
+            method = req.get("method", "")
+            params = req.get("params", {})
+            req_id = req.get("id")
+            
+            if method == "initialize":
+                result = {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "pinterest-mcp", "version": "1.0.0"}
+                }
+            elif method == "notifications/initialized":
+                self.send_response(204)
+                self.end_headers()
+                return
+            else:
+                result = handle_mcp(method, params)
+            
+            response = {"jsonrpc": "2.0", "id": req_id, "result": result}
+        except Exception as e:
+            response = {"jsonrpc": "2.0", "id": None, "error": {"code": -32603, "message": str(e)}}
+        
+        body = json.dumps(response).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", len(data))
+        self.send_header("Content-Length", len(body))
         self.end_headers()
-        self.wfile.write(data)
-
+        self.wfile.write(body)
 
 if __name__ == "__main__":
-    print(f"Pinterest MCP server running on port {PORT}")
-    HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
+    print(f"Starting Pinterest MCP server on port {PORT}")
+    server = HTTPServer(("0.0.0.0", PORT), Handler)
+    server.serve_forever()
