@@ -68,7 +68,7 @@ def get_campaign_analytics(ad_account_id, start_date, end_date, campaign_ids=Non
     params = {
         "start_date": start_date,
         "end_date": end_date,
-        "columns": "SPEND_IN_DOLLAR,TOTAL_IMPRESSIONS,TOTAL_CLICKS,CTR,TOTAL_CONVERSIONS,TOTAL_CLICK_CHECKOUT,TOTAL_VIEW_CHECKOUT,CPC_IN_MICRO_DOLLAR,CPM_IN_MICRO_DOLLAR",
+        "columns": "SPEND_IN_DOLLAR,IMPRESSION_1,CLICK_1,CTR,CHECKOUT,CPC_IN_MICRO_DOLLAR,CPM_IN_MICRO_DOLLAR",
         "granularity": "TOTAL",
     }
     if campaign_ids:
@@ -83,7 +83,7 @@ def get_ad_group_analytics(ad_account_id, start_date, end_date, ad_group_ids=Non
     params = {
         "start_date": start_date,
         "end_date": end_date,
-        "columns": "SPEND_IN_DOLLAR,TOTAL_IMPRESSIONS,TOTAL_CLICKS,CTR,TOTAL_CONVERSIONS,CPC_IN_MICRO_DOLLAR",
+        "columns": "SPEND_IN_DOLLAR,IMPRESSION_1,CLICK_1,CTR,CHECKOUT,CPC_IN_MICRO_DOLLAR",
         "granularity": "TOTAL",
     }
     if ad_group_ids:
@@ -98,7 +98,7 @@ def get_ad_analytics(ad_account_id, start_date, end_date, ad_ids=None):
     params = {
         "start_date": start_date,
         "end_date": end_date,
-        "columns": "SPEND_IN_DOLLAR,TOTAL_IMPRESSIONS,TOTAL_CLICKS,CTR,TOTAL_CONVERSIONS,CPC_IN_MICRO_DOLLAR",
+        "columns": "SPEND_IN_DOLLAR,IMPRESSION_1,CLICK_1,CTR,CHECKOUT,CPC_IN_MICRO_DOLLAR",
         "granularity": "TOTAL",
     }
     if ad_ids:
