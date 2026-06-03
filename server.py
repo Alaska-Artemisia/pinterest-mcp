@@ -55,6 +55,52 @@ def get_campaigns(ad_account_id):
     r.raise_for_status()
     return r.json().get("items", [])
 
+def get_ad_groups(ad_account_id, campaign_id=None):
+    params = {"page_size": 25}
+    if campaign_id:
+        params["campaign_ids"] = campaign_id
+    r = httpx.get(f"{PINTEREST_API}/ad_accounts/{ad_account_id}/ad_groups",
+                  headers=auth_headers(), params=params)
+    r.raise_for_status()
+    return r.json().get("items", [])
+
+def create_ad_group(ad_account_id, campaign_id, name, country="US",
+                    daily_budget_micro=None, bid_micro=None, billing_event="IMPRESSION"):
+    # Consideration / WEB_CONVERSION campaigns default to CBO, so budget can be
+    # omitted here and inherited from the campaign. Pass daily_budget_micro only
+    # for an ABO campaign that needs an ad-group-level budget.
+    ad_group = {
+        "campaign_id": campaign_id,
+        "name": name,
+        "status": "ACTIVE",
+        "billing_event": billing_event,
+        "auto_targeting_enabled": True,
+        "targeting_spec": {"GEO": [country]},
+    }
+    if daily_budget_micro is not None:
+        ad_group["budget_in_micro_currency"] = int(daily_budget_micro)
+        ad_group["budget_type"] = "DAILY"
+    if bid_micro is not None:
+        ad_group["bid_in_micro_currency"] = int(bid_micro)
+    r = httpx.post(f"{PINTEREST_API}/ad_accounts/{ad_account_id}/ad_groups",
+                   headers=auth_headers(), json=[ad_group])
+    r.raise_for_status()
+    return r.json()
+
+def create_ad(ad_account_id, ad_group_id, pin_id, name, status="ACTIVE", creative_type="REGULAR"):
+    # v5 create-ads is a bulk endpoint: body is an ARRAY of ad objects.
+    payload = [{
+        "ad_group_id": ad_group_id,
+        "creative_type": creative_type,
+        "pin_id": pin_id,
+        "name": name,
+        "status": status,
+    }]
+    r = httpx.post(f"{PINTEREST_API}/ad_accounts/{ad_account_id}/ads",
+                   headers=auth_headers(), json=payload)
+    r.raise_for_status()
+    return r.json()
+
 def get_campaign_analytics(ad_account_id, start_date, end_date, campaign_ids=None):
     params = {
         "start_date": start_date,
@@ -100,11 +146,14 @@ def get_ad_analytics(ad_account_id, start_date, end_date, ad_ids=None):
 TOOLS = {
     "list_boards": {"description": "List all Pinterest boards", "inputSchema": {"type": "object", "properties": {}}},
     "create_board": {"description": "Create a Pinterest board", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}, "privacy": {"type": "string"}}, "required": ["name"]}},
-    "create_pin": {"description": "Create a Pinterest pin on a board", "inputSchema": {"type": "object", "properties": {"board_id": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "image_url": {"type": "string"}, "link": {"type": "string"}, "alt_text": {"type": "string"}}, "required": ["board_id", "title", "description", "image_url"]}},
+    "create_pin": {"description": "Create a Pinterest pin on a board. image_url must be a public HTTPS URL.", "inputSchema": {"type": "object", "properties": {"board_id": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "image_url": {"type": "string"}, "link": {"type": "string"}, "alt_text": {"type": "string"}}, "required": ["board_id", "title", "description", "image_url"]}},
     "list_pins": {"description": "List pins on a board", "inputSchema": {"type": "object", "properties": {"board_id": {"type": "string"}}, "required": ["board_id"]}},
     "get_account_info": {"description": "Get Pinterest account info and stats", "inputSchema": {"type": "object", "properties": {}}},
     "get_ad_accounts": {"description": "List all Pinterest ad accounts", "inputSchema": {"type": "object", "properties": {}}},
     "get_campaigns": {"description": "List all campaigns for an ad account", "inputSchema": {"type": "object", "properties": {"ad_account_id": {"type": "string"}}, "required": ["ad_account_id"]}},
+    "get_ad_groups": {"description": "List ad groups for an ad account, optionally filtered to one campaign", "inputSchema": {"type": "object", "properties": {"ad_account_id": {"type": "string"}, "campaign_id": {"type": "string"}}, "required": ["ad_account_id"]}},
+    "create_ad_group": {"description": "Create an ad group under a campaign. For CBO campaigns (Consideration/Web Conversion) budget is inherited from the campaign and can be omitted.", "inputSchema": {"type": "object", "properties": {"ad_account_id": {"type": "string"}, "campaign_id": {"type": "string"}, "name": {"type": "string"}, "country": {"type": "string", "description": "Two-letter geo code, default US"}, "daily_budget_micro": {"type": "integer", "description": "ABO only: daily budget in micro-currency (e.g. 5 USD = 5000000)"}, "bid_micro": {"type": "integer"}, "billing_event": {"type": "string", "description": "IMPRESSION or CLICKTHROUGH"}}, "required": ["ad_account_id", "campaign_id", "name"]}},
+    "create_ad": {"description": "Create an ad by promoting an existing pin into an ad group. Returns the new ad ID.", "inputSchema": {"type": "object", "properties": {"ad_account_id": {"type": "string"}, "ad_group_id": {"type": "string"}, "pin_id": {"type": "string"}, "name": {"type": "string"}, "status": {"type": "string", "description": "ACTIVE or PAUSED, default ACTIVE"}, "creative_type": {"type": "string", "description": "Default REGULAR (standard image pin)"}}, "required": ["ad_account_id", "ad_group_id", "pin_id", "name"]}},
     "get_campaign_analytics": {"description": "Get campaign analytics: spend, impressions, clicks, CTR, conversions for a date range", "inputSchema": {"type": "object", "properties": {"ad_account_id": {"type": "string"}, "start_date": {"type": "string", "description": "YYYY-MM-DD"}, "end_date": {"type": "string", "description": "YYYY-MM-DD"}, "campaign_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["ad_account_id", "start_date", "end_date"]}},
     "get_ad_group_analytics": {"description": "Get ad group level analytics for a date range", "inputSchema": {"type": "object", "properties": {"ad_account_id": {"type": "string"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "ad_group_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["ad_account_id", "start_date", "end_date"]}},
     "get_ad_analytics": {"description": "Get individual ad performance analytics for a date range", "inputSchema": {"type": "object", "properties": {"ad_account_id": {"type": "string"}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "ad_ids": {"type": "array", "items": {"type": "string"}}}, "required": ["ad_account_id", "start_date", "end_date"]}},
@@ -114,6 +163,16 @@ def format_spend(micro_dollars):
     if micro_dollars is None:
         return "N/A"
     return f"${micro_dollars / 1_000_000:.2f}"
+
+def extract_created(resp):
+    # v5 bulk-create responses: {"items": [{"data": {...}, "exceptions": {...}}]}
+    items = resp.get("items") if isinstance(resp, dict) else resp
+    if not items:
+        return None, None
+    first = items[0]
+    if isinstance(first, dict):
+        return first.get("data", first), first.get("exceptions")
+    return first, None
 
 def handle_mcp(method, params):
     if method == "tools/list":
@@ -164,6 +223,32 @@ def handle_mcp(method, params):
                     return ok("No campaigns found.")
                 lines = [f"- {c['name']} (ID: {c['id']}, Status: {c.get('status', 'N/A')}, Objective: {c.get('objective_type', 'N/A')})" for c in campaigns]
                 return ok("\n".join(lines))
+            
+            elif name == "get_ad_groups":
+                ad_groups = get_ad_groups(args["ad_account_id"], args.get("campaign_id"))
+                if not ad_groups:
+                    return ok("No ad groups found.")
+                lines = [f"- {a.get('name', 'Unnamed')} (ID: {a['id']}, Status: {a.get('status', 'N/A')}, Campaign: {a.get('campaign_id', 'N/A')})" for a in ad_groups]
+                return ok("\n".join(lines))
+            
+            elif name == "create_ad_group":
+                resp = create_ad_group(
+                    args["ad_account_id"], args["campaign_id"], args["name"],
+                    args.get("country", "US"), args.get("daily_budget_micro"),
+                    args.get("bid_micro"), args.get("billing_event", "IMPRESSION"))
+                data, exc = extract_created(resp)
+                if exc:
+                    return err(f"Ad group creation returned exceptions: {json.dumps(exc)}")
+                return ok(f"Ad group created! ID: {data.get('id')} (status: {data.get('status', 'N/A')})")
+            
+            elif name == "create_ad":
+                resp = create_ad(
+                    args["ad_account_id"], args["ad_group_id"], args["pin_id"],
+                    args["name"], args.get("status", "ACTIVE"), args.get("creative_type", "REGULAR"))
+                data, exc = extract_created(resp)
+                if exc:
+                    return err(f"Ad creation returned exceptions: {json.dumps(exc)}")
+                return ok(f"Ad created! ID: {data.get('id')} (status: {data.get('status', 'N/A')})")
             
             elif name == "get_campaign_analytics":
                 data = get_campaign_analytics(args["ad_account_id"], args["start_date"], args["end_date"], args.get("campaign_ids"))
@@ -236,7 +321,7 @@ class Handler(BaseHTTPRequestHandler):
                 result = {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "pinterest-mcp", "version": "1.0.0"}
+                    "serverInfo": {"name": "pinterest-mcp", "version": "1.1.0"}
                 }
             elif method == "notifications/initialized":
                 self.send_response(204)
