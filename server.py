@@ -279,7 +279,7 @@ def create_ad_group(ad_account_id, campaign_id, name, country="US",
         "campaign_id": campaign_id,
         "name": name,
         "status": status,
-        "billing_event": billing_event,
+        "billable_event": billing_event,
         "auto_targeting_enabled": bool(auto_targeting),
         "targeting_spec": spec,
     }
