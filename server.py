@@ -361,7 +361,7 @@ def create_keywords(ad_account_id, ad_group_id, values, match_type="BROAD", bid_
             k["bid"] = int(bid_micro)
         kws.append(k)
     r = httpx.post(f"{PINTEREST_API}/ad_accounts/{ad_account_id}/keywords",
-                   headers=auth_headers(), json={"keywords": kws}, timeout=30)
+                   headers=auth_headers(), json={"parent_id": str(ad_group_id), "keywords": kws}, timeout=30)
     r.raise_for_status()
     return r.json()
 
