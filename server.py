@@ -181,11 +181,95 @@ def create_pin(board_id, title, description, image_url, link="https://meandlia.c
     return r.json()
 
 
-def list_pins(board_id):
-    r = httpx.get(f"{PINTEREST_API}/boards/{board_id}/pins", headers=auth_headers(),
-                  params={"page_size": 25}, timeout=30)
+def list_pins(board_id, max_pins=250):
+    """All pins on a board, following the bookmark. Returns FULL pin objects."""
+    items, bookmark = [], None
+    while len(items) < max_pins:
+        params = {"page_size": 100}
+        if bookmark:
+            params["bookmark"] = bookmark
+        r = httpx.get(f"{PINTEREST_API}/boards/{board_id}/pins", headers=auth_headers(),
+                      params=params, timeout=30)
+        r.raise_for_status()
+        body = r.json()
+        items.extend(body.get("items", []))
+        bookmark = body.get("bookmark")
+        if not bookmark:
+            break
+    return items[:max_pins]
+
+
+def get_pin(pin_id):
+    """Full detail for one pin, including its destination link."""
+    r = httpx.get(f"{PINTEREST_API}/pins/{pin_id}", headers=auth_headers(), timeout=30)
     r.raise_for_status()
-    return r.json().get("items", [])
+    return r.json()
+
+
+def _guard_pin(pin_id, expected_title, expect_board_id=None):
+    """Refuse to touch a pin unless title (and optionally board) match. Returns the live pin."""
+    live = get_pin(pin_id)
+    actual = (live.get("title") or "").strip()
+    if actual != (expected_title or "").strip():
+        raise ValueError(
+            f"GUARD FAILED: pin {pin_id} is titled {actual!r}, expected "
+            f"{(expected_title or '')!r}. Nothing was changed."
+        )
+    if expect_board_id and str(live.get("board_id")) != str(expect_board_id):
+        raise ValueError(
+            f"GUARD FAILED: pin {pin_id} is on board {live.get('board_id')}, "
+            f"expected {expect_board_id}. Nothing was changed."
+        )
+    return live
+
+
+def update_pin(pin_id, expected_title, link=None, title=None, description=None,
+               alt_text=None, expect_board_id=None):
+    """PATCH a pin's link/title/description. NOTE: v5 PATCH /pins is beta-gated; may 403."""
+    _guard_pin(pin_id, expected_title, expect_board_id)
+    payload = {k: v for k, v in {"link": link, "title": title,
+                                 "description": description, "alt_text": alt_text}.items()
+               if v is not None}
+    if not payload:
+        raise ValueError("Nothing to update - pass at least one of link/title/description/alt_text.")
+    r = httpx.patch(f"{PINTEREST_API}/pins/{pin_id}", headers=auth_headers(),
+                    json=payload, timeout=30)
+    if r.status_code in (403, 404) and "beta" in (r.text or "").lower():
+        raise RuntimeError(
+            f"PATCH /pins is not enabled for this app (HTTP {r.status_code}). "
+            f"Pin edits must be done in the Pinterest UI. Body: {r.text[:300]}"
+        )
+    r.raise_for_status()
+    after = get_pin(pin_id)
+    return {"pin": after, "verified": all(str(after.get(k)) == str(v) for k, v in payload.items())}
+
+
+def delete_pin(pin_id, expected_title, expect_board_id=None):
+    """PERMANENT. Pinterest has no trash and no undo. Guarded on title (+ optional board)."""
+    live = _guard_pin(pin_id, expected_title, expect_board_id)
+    r = httpx.delete(f"{PINTEREST_API}/pins/{pin_id}", headers=auth_headers(), timeout=30)
+    r.raise_for_status()
+    return {"deleted": pin_id, "title": (live.get("title") or ""), "board_id": live.get("board_id")}
+
+
+def get_pin_analytics(pin_ids, start_date, end_date, ad_account_id=None):
+    """Organic pin performance. Batch endpoint, max 100 pins. Dates YYYY-MM-DD, max 90d window."""
+    if isinstance(pin_ids, str):
+        pin_ids = [pin_ids]
+    if len(pin_ids) > 100:
+        raise ValueError("Max 100 pin_ids per call.")
+    params = {
+        "pin_ids": ",".join(str(p) for p in pin_ids),
+        "start_date": start_date,
+        "end_date": end_date,
+        "metric_types": "IMPRESSION,PIN_CLICK,OUTBOUND_CLICK,SAVE",
+    }
+    if ad_account_id:
+        params["ad_account_id"] = ad_account_id
+    r = httpx.get(f"{PINTEREST_API}/pins/analytics", headers=auth_headers(),
+                  params=params, timeout=30)
+    r.raise_for_status()
+    return r.json()
 
 
 def get_account_info():
@@ -492,7 +576,11 @@ TOOLS = {
     "list_boards": {"description": "List all Pinterest boards", "inputSchema": {"type": "object", "properties": {}}},
     "create_board": {"description": "Create a Pinterest board", "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "description": {"type": "string"}, "privacy": {"type": "string"}}, "required": ["name"]}},
     "create_pin": {"description": "Create a Pinterest pin on a board. image_url must be a public HTTPS URL.", "inputSchema": {"type": "object", "properties": {"board_id": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "image_url": {"type": "string"}, "link": {"type": "string"}, "alt_text": {"type": "string"}}, "required": ["board_id", "title", "description", "image_url"]}},
-    "list_pins": {"description": "List pins on a board", "inputSchema": {"type": "object", "properties": {"board_id": {"type": "string"}}, "required": ["board_id"]}},
+    "list_pins": {"description": "List pins on a board. Returns id, title AND destination link for every pin, paging past the first 100.", "inputSchema": {"type": "object", "properties": {"board_id": {"type": "string"}, "max_pins": {"type": "integer", "description": "Cap on pins returned (default 250)"}}, "required": ["board_id"]}},
+    "get_pin": {"description": "Full detail for ONE pin: destination link, board, title, description, created_at. Use this to verify a pin's link without opening a browser.", "inputSchema": {"type": "object", "properties": {"pin_id": {"type": "string"}}, "required": ["pin_id"]}},
+    "update_pin": {"description": "Update a pin's link/title/description/alt_text. GUARDED: expected_title must match the live pin exactly or the call is refused. NOTE: Pinterest v5 PATCH /pins is beta-gated and may return 403 - if so, pin edits must be done in the UI.", "inputSchema": {"type": "object", "properties": {"pin_id": {"type": "string"}, "expected_title": {"type": "string", "description": "Must match the live pin title exactly. Safety guard - pass \"\" for blank-titled pins and also pass expect_board_id."}, "link": {"type": "string"}, "title": {"type": "string"}, "description": {"type": "string"}, "alt_text": {"type": "string"}, "expect_board_id": {"type": "string", "description": "Optional extra guard: refuse unless the pin is on this board."}}, "required": ["pin_id", "expected_title"]}},
+    "delete_pin": {"description": "PERMANENTLY delete a pin. No trash, no undo, and any ad promoting the pin dies with it. GUARDED: expected_title must match the live pin exactly. For blank-titled pins pass expected_title=\"\" AND expect_board_id.", "inputSchema": {"type": "object", "properties": {"pin_id": {"type": "string"}, "expected_title": {"type": "string", "description": "Must match the live pin title exactly, or the delete is refused."}, "expect_board_id": {"type": "string", "description": "Optional extra guard: refuse unless the pin is on this board. REQUIRED in practice for blank-titled pins."}}, "required": ["pin_id", "expected_title"]}},
+    "get_pin_analytics": {"description": "ORGANIC pin performance (impressions, pin clicks, outbound clicks, saves) for up to 100 pins in one call. Dates YYYY-MM-DD, max 90-day window. This is organic reach - NOT the paid ad analytics tools.", "inputSchema": {"type": "object", "properties": {"pin_ids": {"type": "array", "items": {"type": "string"}}, "start_date": {"type": "string"}, "end_date": {"type": "string"}, "ad_account_id": {"type": "string", "description": "Optional, for business-access accounts."}}, "required": ["pin_ids", "start_date", "end_date"]}},
     "get_account_info": {"description": "Get Pinterest account info and stats", "inputSchema": {"type": "object", "properties": {}}},
     "get_ad_accounts": {"description": "List all Pinterest ad accounts", "inputSchema": {"type": "object", "properties": {}}},
     "get_campaigns": {"description": "List all campaigns for an ad account", "inputSchema": {"type": "object", "properties": {"ad_account_id": {"type": "string"}}, "required": ["ad_account_id"]}},
@@ -574,10 +662,44 @@ def handle_mcp(method, params):
                 return ok(f"Pin created! ID: {pin['id']}\nURL: https://pinterest.com/pin/{pin['id']}/")
 
             elif name == "list_pins":
-                pins = list_pins(args["board_id"])
+                pins = list_pins(args["board_id"], args.get("max_pins", 250))
                 if not pins:
                     return ok("No pins found on this board.")
-                return ok("\n".join([f"- {p.get('title', 'Untitled')} (ID: {p['id']})" for p in pins]))
+                lines = []
+                for p in pins:
+                    t = (p.get("title") or "").strip() or "(BLANK TITLE)"
+                    lines.append(f"- {t} (ID: {p['id']})\n    link: {p.get('link') or '(none)'}")
+                return ok(f"{len(pins)} pins\n" + "\n".join(lines))
+
+            elif name == "get_pin":
+                p = get_pin(args["pin_id"])
+                return ok(
+                    f"Pin {p.get('id')}\n"
+                    f"  title:       {p.get('title') or '(blank)'}\n"
+                    f"  link:        {p.get('link') or '(none)'}\n"
+                    f"  board_id:    {p.get('board_id')}\n"
+                    f"  created_at:  {p.get('created_at')}\n"
+                    f"  description: {(p.get('description') or '')[:200]}"
+                )
+
+            elif name == "update_pin":
+                res = update_pin(
+                    args["pin_id"], args["expected_title"],
+                    link=args.get("link"), title=args.get("title"),
+                    description=args.get("description"), alt_text=args.get("alt_text"),
+                    expect_board_id=args.get("expect_board_id"),
+                )
+                p = res["pin"]
+                flag = "VERIFIED" if res["verified"] else "SAVED BUT READ-BACK DID NOT MATCH"
+                return ok(f"Updated pin {p.get('id')} [{flag}]\n  title: {p.get('title')}\n  link:  {p.get('link')}")
+
+            elif name == "delete_pin":
+                res = delete_pin(args["pin_id"], args["expected_title"], args.get("expect_board_id"))
+                return ok(f"DELETED pin {res['deleted']} (title: {res['title'] or '(blank)'}, board: {res['board_id']}). This is permanent.")
+
+            elif name == "get_pin_analytics":
+                data = get_pin_analytics(args["pin_ids"], args["start_date"], args["end_date"], args.get("ad_account_id"))
+                return ok(_fmt_analytics("Organic Pin Analytics", data))
 
             elif name == "get_account_info":
                 info = get_account_info()
