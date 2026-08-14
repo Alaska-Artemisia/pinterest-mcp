@@ -1,6 +1,6 @@
 """
-Me + Lia - Pinterest MCP Server (v3)
-Exposes Pinterest v5 API actions to Claude via MCP protocol.
+ALCOVE Pinterest MCP Server (v3.1)
+Exposes Pinterest v5 API actions via MCP protocol.
 
 v3 adds the write/targeting/audience/conversion surface that v2 was missing:
   - create_campaign                  (no more "make the shell in the UI")
@@ -167,18 +167,94 @@ def create_board(name, description="", privacy="PUBLIC"):
     return r.json()
 
 
-def create_pin(board_id, title, description, image_url, link="https://meandlia.com", alt_text=""):
+def _pinterest_request_id(response):
+    """Return Pinterest's diagnostic request ID when present."""
+    for key in ("x-pinterest-rid", "x-request-id", "x-pinterest-request-id"):
+        if response.headers.get(key):
+            return response.headers[key]
+    return "unavailable"
+
+
+def _post_pin_payload(payload):
+    """Post once, retrying only explicit rate limits (which cannot create a Pin)."""
+    response = None
+    for attempt in range(3):
+        response = httpx.post(
+            f"{PINTEREST_API}/pins",
+            headers=auth_headers(),
+            json=payload,
+            timeout=45,
+        )
+        if response.status_code != 429:
+            return response
+        retry_after = response.headers.get("retry-after")
+        try:
+            delay = min(float(retry_after), 15) if retry_after else 2 ** attempt
+        except (TypeError, ValueError):
+            delay = 2 ** attempt
+        time.sleep(delay)
+    return response
+
+
+def _base64_media_source(image_url):
+    """Download an image so Pinterest does not need to proxy the source URL."""
+    response = httpx.get(
+        image_url,
+        headers={"User-Agent": "ALCOVE-Pinterest-MCP/3.1"},
+        follow_redirects=True,
+        timeout=45,
+    )
+    response.raise_for_status()
+    content_type = (response.headers.get("content-type") or "").split(";", 1)[0].lower()
+    if content_type == "image/jpg":
+        content_type = "image/jpeg"
+    if content_type not in ("image/jpeg", "image/png"):
+        raise ValueError(
+            f"Unsupported image content type {content_type!r}; use image/jpeg or image/png."
+        )
+    return {
+        "source_type": "image_base64",
+        "content_type": content_type,
+        "data": base64.b64encode(response.content).decode("ascii"),
+        "is_standard": True,
+    }
+
+
+def create_pin(board_id, title, description, image_url, link="https://alcoveobjects.com", alt_text=""):
     payload = {
         "board_id": board_id,
         "title": title,
         "description": description,
         "link": link,
         "alt_text": alt_text or title,
-        "media_source": {"source_type": "image_url", "url": image_url},
+        "media_source": {
+            "source_type": "image_url",
+            "url": image_url,
+            "is_standard": True,
+        },
     }
-    r = httpx.post(f"{PINTEREST_API}/pins", headers=auth_headers(), json=payload, timeout=30)
-    r.raise_for_status()
-    return r.json()
+    response = _post_pin_payload(payload)
+    if response.is_success:
+        return response.json()
+
+    # Pinterest code 2787 is a generic image-ingestion failure. Send the same
+    # image inline to bypass Pinterest's third-party image proxy.
+    error_code = None
+    try:
+        error_code = response.json().get("code")
+    except (ValueError, AttributeError):
+        pass
+    if response.status_code == 400 and error_code == 2787:
+        payload["media_source"] = _base64_media_source(image_url)
+        response = _post_pin_payload(payload)
+        if response.is_success:
+            return response.json()
+
+    request_id = _pinterest_request_id(response)
+    raise RuntimeError(
+        f"Pinterest create Pin failed: HTTP {response.status_code}; "
+        f"request_id={request_id}; body={response.text[:1000]}"
+    )
 
 
 def list_pins(board_id, max_pins=250):
@@ -658,7 +734,7 @@ def handle_mcp(method, params):
                 return ok(f"Board created: {board['name']} (ID: {board['id']})")
 
             elif name == "create_pin":
-                pin = create_pin(args["board_id"], args["title"], args["description"], args["image_url"], args.get("link", "https://meandlia.com"), args.get("alt_text", ""))
+                pin = create_pin(args["board_id"], args["title"], args["description"], args["image_url"], args.get("link", "https://alcoveobjects.com"), args.get("alt_text", ""))
                 return ok(f"Pin created! ID: {pin['id']}\nURL: https://pinterest.com/pin/{pin['id']}/")
 
             elif name == "list_pins":
@@ -897,14 +973,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/":
-            self._html(200, "<h2>Pinterest MCP (v3)</h2><p>Status: ok. POST /mcp for tools. Visit <a href='/login'>/login</a> to (re)authorize.</p>")
+            self._html(200, "<h2>ALCOVE Pinterest MCP (v3.1)</h2><p>Status: ok. POST /mcp for tools. Visit <a href='/login'>/login</a> to (re)authorize.</p>")
             return
 
         if path == "/login":
             host = self.headers.get("Host", "")
             redirect_uri = f"https://{host}/callback"
             url = (f"{AUTHORIZE_URL}?client_id={CLIENT_ID}&redirect_uri={redirect_uri}"
-                   f"&response_type=code&scope={SCOPES}&state=melia")
+                   f"&response_type=code&scope={SCOPES}&state=alcove")
             self.send_response(302)
             self.send_header("Location", url)
             self.end_headers()
@@ -966,7 +1042,7 @@ class Handler(BaseHTTPRequestHandler):
 
             if method == "initialize":
                 result = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
-                          "serverInfo": {"name": "pinterest-mcp", "version": "3.0.0"}}
+                          "serverInfo": {"name": "pinterest-mcp", "version": "3.1.0"}}
             elif method == "notifications/initialized":
                 self.send_response(204)
                 self.end_headers()
