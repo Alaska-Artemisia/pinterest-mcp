@@ -45,11 +45,21 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 
 PINTEREST_API = "https://api.pinterest.com/v5"
 AUTHORIZE_URL = "https://www.pinterest.com/oauth/"
-SCOPES = "ads:read,ads:write,boards:read,boards:write,pins:read,pins:write,user_accounts:read"
+SCOPES = os.environ.get("PINTEREST_SCOPES", "ads:read,ads:write,boards:read,boards:write,pins:read,pins:write,user_accounts:read")
+BRAND = os.environ.get("BRAND_NAME", "Pinterest")
+# Where the rotated refresh token is persisted (mount a Railway volume at /data).
+TOKEN_FILE = os.environ.get("TOKEN_FILE", "/data/refresh_token")
 
 CLIENT_ID = os.environ.get("PINTEREST_CLIENT_ID", "")
 CLIENT_SECRET = os.environ.get("PINTEREST_CLIENT_SECRET", "")
 REFRESH_TOKEN = os.environ.get("PINTEREST_REFRESH_TOKEN", "")
+try:
+    with open(os.environ.get("TOKEN_FILE", "/data/refresh_token")) as _f:
+        _saved = _f.read().strip()
+        if _saved:
+            REFRESH_TOKEN = _saved  # newest rotated token wins over the env var
+except OSError:
+    pass
 STATIC_TOKEN = os.environ.get("PINTEREST_ACCESS_TOKEN", "")  # optional override
 PORT = int(os.environ.get("PORT", 8080))
 
@@ -65,8 +75,23 @@ def _basic_auth_header():
     return "Basic " + base64.b64encode(raw).decode()
 
 
+def _save_refresh_token(rt):
+    """Keep the newest refresh token (Pinterest may rotate it) in memory and on disk."""
+    global REFRESH_TOKEN
+    if not rt:
+        return
+    REFRESH_TOKEN = rt
+    try:
+        os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
+        with open(TOKEN_FILE, "w") as f:
+            f.write(rt)
+    except OSError:
+        pass
+
+
 def refresh_access_token():
     """Exchange the refresh token for a fresh access token; cache it."""
+    global REFRESH_TOKEN
     if not REFRESH_TOKEN:
         raise RuntimeError(
             "No PINTEREST_REFRESH_TOKEN set. Visit /login once to authorize, "
@@ -83,6 +108,7 @@ def refresh_access_token():
     )
     r.raise_for_status()
     j = r.json()
+    _save_refresh_token(j.get("refresh_token", ""))
     _token_cache["access_token"] = j["access_token"]
     # refresh slightly early; default 30d if not provided
     _token_cache["expires_at"] = time.time() + int(j.get("expires_in", 2592000))
@@ -973,7 +999,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/":
-            self._html(200, "<h2>ALCOVE Pinterest MCP (v3.1)</h2><p>Status: ok. POST /mcp for tools. Visit <a href='/login'>/login</a> to (re)authorize.</p>")
+            self._html(200, "<h2>"+BRAND+" Pinterest MCP (v3.2)</h2><p>Status: ok. POST /mcp for tools. Visit <a href='/login'>/login</a> to (re)authorize.</p>")
             return
 
         if path == "/login":
@@ -1009,7 +1035,7 @@ class Handler(BaseHTTPRequestHandler):
                 at = j.get("access_token", "")
                 # Make the server usable immediately (until restart).
                 if rt:
-                    REFRESH_TOKEN = rt
+                    _save_refresh_token(rt)
                 if at:
                     _token_cache["access_token"] = at
                     _token_cache["expires_at"] = time.time() + int(j.get("expires_in", 2592000))
